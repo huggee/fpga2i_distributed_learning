@@ -48,8 +48,8 @@
 #include "run_mlp_def.h"    //固有の関数（.hで定義して.cppにソースコード）
 SpiRAM sRam(9);             //SRAMとのSPI通信のSS(SlaveSlect)にD9（固定）
 byte buffer[200] = {};
-char recData = ' ';
-int reduce_interval = 10;
+char recvMessage = ' ';
+byte reduce_interval;
 
 /********** LCD表示 **********/
 #include <Wire.h>
@@ -101,22 +101,44 @@ byte out_1[4] = {B00100000,B00000000,B00000000,B00100000};//Y1=Y0bar
 void upload(uint32_t sram_base_addr, uint32_t start_addr, uint32_t end_addr, byte *buf){
   for(i = start_addr; i <= end_addr; i++){
     sRam.readBuffer(sram_base_addr + i, (char *)buf, 1);
-    Serial.print(buf[0]);
-    Serial.print(',');
+    Serial.write(buf[0]);
+    //Serial.print(',');
   }
-  Serial.print('\n');
+  //Serial.print('\n');
+}
+
+void download(uint32_t sram_base_addr, uint32_t start_addr, uint32_t end_addr, byte *buf){
+  char delimiter = ' ';
+  for(i = start_addr; i <= end_addr; i++){
+    while(Serial.available() == 0){ delay(1); }
+    buf[0] = Serial.read();
+    sRam.writeBuffer(sram_base_addr + i, (char *)buf, 1);
+  }
+  while(Serial.available() == 0){ delay(1); }
+  delimiter = Serial.read();
+  // do{
+  //   delimiter = Serial.read();
+  // }while(delimiter != 'E');
+  if(delimiter != 'E'){
+    lcd.setCursor(0, 0);
+    lcd.print("ERROR");
+    while(1){delay(1);}
+  }                            
 }
 
 void setup(){           
     /******* 初期動作チェック         *******/    
     pinMode(13,OUTPUT);   //Arduino内蔵LED13ピン
     digitalWrite(13,HIGH);delay(200);digitalWrite(13,LOW); 
-    Serial.begin(9600); 
+    Serial.begin(115200); 
 //    Serial.begin(2000000); 
     #ifdef SERIAL_MONITOR_ENABLE
     Serial.println("\nStart Initialization.\n");
     #endif
-    
+
+    Serial.print('I');
+
+
     /******* GPIOとSRAMの全領域を0で埋める **********/
     zero_filling(sRam);
     /******* SRAMの重み領域を初期化        **********/
@@ -156,28 +178,40 @@ void setup(){
       delay(200);
  
     }    
-      leds.setColorRGB(0,255,255,255);
-      lcd.setRGB(255, 255, 255);
+    leds.setColorRGB(0,255,255,255);
+    lcd.setRGB(255, 255, 255);
  
-      Serial.print('I');
-      // Serial.print('\n');
 
     /******* 乱数の初期値設定 *******/
-     randomSeed(analogRead(A3));   //乱数の初期値をばらつかせるために導入（いれないといつも同じ学習履歴）
+    randomSeed(analogRead(A3));   //乱数の初期値をばらつかせるために導入（いれないといつも同じ学習履歴）
 
+    while(Serial.available() == 0){ delay(1); }
+    reduce_interval = Serial.read();
+    Serial.print('R');
+    // while(1){
+    //   lcd.setCursor(0,0);
+    //   lcd.print(reduce_interval);
+    // }
+      
 }
 void loop(){
     byte flag, op;
     byte in_dat[N_IN];   //入力データ
     byte la_dat[N_OUT];  //教師データ（label)
  
+    if(Serial.available() > 0){
+      recvMessage = Serial.read();
+    }
+
     switch (state) {
       case 0: // デフォルトステート(推論)
 
             // PCから'J'を受け取ったら学習・推論開始
-            if(recData == 'J'){
+            if(recvMessage == 'L'){
+              state = 2;
+            }
+            if(recvMessage == 'M'){
               state = 3;
-              recData == ' ';
             }
 
             // /********** PUSH_SW押下による状態遷移 **********/   
@@ -299,122 +333,34 @@ void loop(){
             #endif
             state = 0;
             count = 0;
+            recvMessage = ' ';
             break;
 
       case 3: //学習→推論+分散学習　・・・ l(learn_time)回
             if(count >= reduce_interval
+                && count < learn_time
                 && count % reduce_interval == 0){
-              upload(SRAM0, ADDR_WH_START, ADDR_WH_END, buffer);
-              upload(SRAM1, ADDR_WH_START, ADDR_WH_END, buffer);
-              upload(SRAM0, ADDR_WO_START, ADDR_WO_END, buffer);
-              upload(SRAM1, ADDR_WO_START, ADDR_WO_END, buffer);
-              while(1){
-                  lcd.setCursor(7, 0);
-                  lcd.print(buffer[0]);
+              if(recvMessage == 'M'){
+                Serial.print('U');
+                recvMessage = ' ';
+              }else if(recvMessage == 'S'){
+                upload(SRAM0, ADDR_WH_START, ADDR_WH_END, buffer);
+                upload(SRAM1, ADDR_WH_START, ADDR_WH_END, buffer);
+                upload(SRAM0, ADDR_WO_START, ADDR_WO_END, buffer);
+                upload(SRAM1, ADDR_WO_START, ADDR_WO_END, buffer);    
+                Serial.print('E');
+                recvMessage = ' ';
+              }else if(recvMessage == 'D'){
+                Serial.print('S');
+                download(SRAM0, ADDR_WH_START, ADDR_WH_END, buffer);
+                download(SRAM1, ADDR_WH_START, ADDR_WH_END, buffer);
+                download(SRAM0, ADDR_WO_START, ADDR_WO_END, buffer);
+                download(SRAM1, ADDR_WO_START, ADDR_WO_END, buffer);
+                recvMessage = ' ';
+              }else if(recvMessage == 'C'){
+                count++;
+                recvMessage = ' ';
               }
-
-              // // Whの上位ビット送信
-              // for(i = ADDR_WH_START; i <= ADDR_WH_END; i++){
-              //   sRam.readBuffer(SRAM0 + i, (char *)buffer, 1);
-              //   Serial.print(buffer[0]);
-              //   Serial.print(',');
-              // }
-              // Serial.print('\n');
-
-              // // Whの下位ビット送信
-              // for(i = ADDR_WH_START; i <= ADDR_WH_END; i++){
-              //   sRam.readBuffer(SRAM1 + i, (char *)buffer, 1);
-              //   Serial.print(buffer[0]);
-              //   Serial.print(',');
-              // }                  
-              // Serial.print('\n');
-
-              // // Woの上位ビット送信
-              // for(i = ADDR_WO_START; i <= ADDR_WO_END; i++){
-              //   sRam.readBuffer(SRAM0 + i, (char *)buffer, 1);
-              //   Serial.print(buffer[0]);
-              //   Serial.print(',');
-              // }                  
-              // Serial.print('\n');
-
-              // // Woの下位ビット送信
-              // for(i = ADDR_WO_START; i <= ADDR_WO_END; i++){
-              //   sRam.readBuffer(SRAM1 + i, (char *)buffer, 1);
-              //   Serial.print(buffer[0]);
-              //   Serial.print(',');
-              // }             
-              // Serial.print('\n');
-              // while(1){
-              //     lcd.setCursor(7, 0);
-              //     lcd.print(buffer[0]);
-              // }
-
-              // Whの上位ビットダウンロード
-              for(i = ADDR_WH_START; i <= ADDR_WH_END; i++){
-                while(Serial.available() == 0){delay(1);}
-                buffer[0] = Serial.read();
-                sRam.writeBuffer(SRAM0 + i, (char *)buffer, 1);
-                // lcd.setCursor(7, 0);
-                // lcd.print(buffer[0]);
-              }
-              
-
-              while(Serial.available() == 0){delay(1);}
-              buffer[0] = Serial.read();
-              if(char(buffer[0]) != 'E'){
-                  // lcd.clear();
-                  lcd.setCursor(7, 0);
-                  lcd.print(buffer[0]);
-                  lcd.setCursor(12, 0);
-                  lcd.print("ERROR1");
-                  lcd.setCursor(7, 1);
-                  lcd.print(char(buffer[0]));        
-                  while(1){delay(0);}
-              }
-              // Whの下位ビットダウンロード
-              for(i = ADDR_WH_START; i <= ADDR_WH_END; i++){
-                while(Serial.available() == 0){delay(1);}
-                buffer[0] = Serial.read();
-                sRam.writeBuffer(SRAM1 + i, (char *)buffer, 1);
-              }
-              while(Serial.available() == 0){delay(1);}
-              recData = Serial.read();
-              if(recData != 'E'){
-                  lcd.setCursor(0, 0);
-                  lcd.print("ERROR2");
-                  while(1){delay(0);}
-              }
-              // Woの上位ビットダウンロード
-              for(i = ADDR_WO_START; i <= ADDR_WO_END; i++){
-                while(Serial.available() == 0){delay(1);}
-                buffer[0] = Serial.read();
-                sRam.writeBuffer(SRAM0 + i, (char *)buffer, 1);
-              }
-              while(Serial.available() == 0){delay(1);}
-              recData = Serial.read();
-              if(recData != 'E'){
-                  lcd.setCursor(0, 0);
-                  lcd.print("ERROR3");
-                  while(1){delay(0);}
-              }                            
-              // Woの下位ビットダウンロード
-              for(i = ADDR_WO_START; i <= ADDR_WO_END; i++){
-                while(Serial.available() == 0){delay(1);}
-                buffer[0] = Serial.read();
-                sRam.writeBuffer(SRAM1 + i, (char *)buffer, 1);
-              }
-              while(Serial.available() == 0){delay(1);}
-              recData = Serial.read();
-              if(recData != 'E'){
-                  lcd.setCursor(0, 0);
-                  lcd.print("ERROR4");
-                  while(1){delay(0);}
-              }
-              while(1){
-                lcd.setCursor(0,0);
-                lcd.print("SUCCESS");
-              }
-
             }else{
               
             /******* 入力・教師データ読み込み**********/ 
@@ -493,14 +439,8 @@ void loop(){
           if(count == learn_time){
             state = 0;
             count = 0;
+            recvMessage = ' ';
           }
           break;
     }
-}
-
-
-void serialEvent(){
-  if(Serial.available() > 0){
-    recData = Serial.read();
-  }
 }
