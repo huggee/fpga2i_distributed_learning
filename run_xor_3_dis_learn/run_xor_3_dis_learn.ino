@@ -1,0 +1,274 @@
+/* テーマ: 01. 論理ゲート
+ * 内容 :   プッシュボタンを押すことで用意されたデータセットを用いてXOR論理を学習する。
+ *         学習結果を2つのスライドスイッチを入力として、LED出力で確認する。 
+ * 履歴：        
+ * 20180220 K.O 　　 オリジナル  01_Logic/run_sensor/run_xor.ino 
+ * 20181008 H.M/I.H コメント付け 01_Logic/run_xor_comment/run_xor_comment.ino
+ * 20181010 H.M/I.H 
+ * 20181019 H.M  ランダム学習方式へ変換
+ * 解説：
+ * (0)ネットワークmlp:ニューロン数 4-30-2:活性化関数 シグモイド（含；最終層）   
+ *    バイアス値は未使用（RNN系では使用）
+ *    データ；8bit固定小数点 符号1bit,整数2bit,小数5bit 学習時重み 16bit⇒少数13bit
+ * (1)内部計算：2入力、1出力XOR論理だが、計算は4入力2出力構成（反転値を利用） 
+ *    説明用に以下のX・・x,yを使用
+ *    学習：（X0,X2,Y0)・・・大文字   推論：（x0,x2,y0)・・・小文字
+ *    推論判定値：y
+ * (2)「学習用データセット準備」
+ * 　　入力データ、教師データ共に、プログラム内で定義
+ *    X0、X1（X0の反転）、X2、X3（X2の反転）、Y0、Y1（Y1の反転）
+ * (3)ピン番号  
+ * 　　D2:SW_pin1  x0 (推論時のみ使用）
+ * 　　D3:SW_pin2  x2（同上）
+ * 　　D5:Push_pin 学習EN用プッシュスイッチ/プッシュ後、離した瞬間に学習開始
+ * 　　D7:LED_pin  推論結果表示用
+ * (4)1回の学習ENボタンのプッシュで(X0,X2,Y0)=(110)→(101)→(011)→(000) 巡回
+ * (5)シリアルモニターの見方
+ *    push# 15 :←学習ENプッシュボタンをプッシュした回数
+ * 　　表示例→1:(11 0): 0.59: 0.59: 0　0.00  
+ * 　　解説  →l:(x0 x2 y0): y0: y1  : y  y0-y1  yは推論判定値  l学習回数
+ *    なお、この推論値は学習時の途中経過なので注意。LEDの点灯とは微妙に異なる
+ * (6)ニューラルネット演算の関数を使用→run_neural_network(sRam, 0x04)or 0x08)
+ * 
+ * 20181025での変更項目 H.M run_xor_3_dis_learn
+ * (7)D2の替わりに表記をSW_pin1に変更（忘れていた）
+ * (8)学習パターンセット4種類を巡回方式（count%4)からランダム（乱数方式）方式に変更した。 
+ *    random関数+randomSeedを導入。変数patternNumを使用。
+ * (9)シリアルモニターの表記をシンプルなものに戻した。なお、learn_rateは1000と多めにした。
+ * (10)LEDの点灯を不良の時に点灯するように逆転させた。その後カラーLEDに変えた
+ * (11)タイミング調整の為のdelaytime変数を導入した。
+ * (12)Loss関数を導入してモニター出来るようにした（二乗差の和）×1/2にした。
+ * (13)LCDのHelloWorldベースに追加
+ * (14)LCDを初期化終了点灯にも入れた！
+ * (15)カラーLEDを追加
+ */          
+
+#include <SPI.h>            //SPI通信用の標準ライブラリ
+#include <SpiRAM.h>         //SRAMとのSPI通信の為のオプションLib
+#include "run_mlp_def.h"    //固有の関数（.hで定義して.cppにソースコード）
+SpiRAM sRam(9);             //SRAMとのSPI通信のSS(SlaveSlect)にD9（固定）
+byte buffer[200] = {};
+
+/********** LCD表示 **********/
+#include <Wire.h>
+#include "rgb_lcd.h"
+rgb_lcd lcd;
+int color_r =100;
+int color_g =235;
+int color_b =100;
+
+/********** カラーLED表示 **********/
+#include <ChainableLED.h>
+ChainableLED leds(A0, A1, 1);
+
+/********** 入出力ピン・変数宣言 **********/
+int SW_pin1 = 2; //x0
+int SW_pin2 = 3; //x2
+int Push_pin =5; //学習EN
+int LED_pin = 7; //LED
+int LED_pin_bar = 6; //LED_bar反転して表示
+
+int i, j, k, m;
+float s;
+int state = 0;
+int count = 0;
+int learn_time = 1000;            //一回の学習EN用のプッシュスイッチでの学習回数
+int push_num =0;                  //学習EN用のプッシュスイッチを押した回数
+byte patternNum =0 ;              //これから学習するデータのパターンの番号
+int delaytime=2;                  //一回の学習サイクル時間を見かけ上延ばすための調整時間
+int delaytime_lcd = 80;           //LCDが赤色を発色しているとわかるぎりぎりの時間
+float loss =0;                    //損失関数は二乗差の総和（といってもy1とy2のふたつ)を4で割っている
+
+boolean LED_OUT;                  //推論判定値
+boolean LED_OUT_NG;               //推論判定がNGの時にLED点灯
+boolean LED_OUT_OK;              //推論判定がOKの時にLED点灯
+
+
+/*******   XOR-DATASET （学習用データセット準備）         *******/    
+/*学習用データ（入力データ、教師データ）をスケッチ内で定義
+*テクニック：入出力の反転値を用いニューロン数/重みの数を増やし精度を向上
+*リストで4入力、2出力のセットを定義している（マトリクス）*/
+
+byte in_0[4] = {B00100000,B00100000,B00000000,B00000000}; //X0    ={1,1,0,0}
+byte in_1[4] = {B00000000,B00000000,B00100000,B00100000}; //X1=X0bar
+byte in_2[4] = {B00100000,B00000000,B00100000,B00000000}; //X2    ={1,0,1,0}
+byte in_3[4] = {B00000000,B00100000,B00000000,B00100000}; //X3=X2bar
+byte out_0[4] = {B00000000,B00100000,B00100000,B00000000};//Y0    ={0,1,1,0}
+byte out_1[4] = {B00100000,B00000000,B00000000,B00100000};//Y1=Y0bar 
+
+void setup(){           
+    /******* 初期動作チェック         *******/    
+    pinMode(13,OUTPUT);   //Arduino内蔵LED13ピン
+    digitalWrite(13,HIGH);delay(200);digitalWrite(13,LOW); 
+    Serial.begin(9600); 
+//    Serial.begin(2000000); 
+    Serial.println("\nStart Initialization.\n");
+    
+    /******* GPIOとSRAMの全領域を0で埋める **********/
+    zero_filling(sRam);
+    /******* SRAMの重み領域を初期化        **********/
+    sram_wait_init(sRam);
+    /******* SRAMの入力データとラベル領域を初期化 *******/
+    sram_data_init(sRam);
+    Serial.println("\nEnd Initialization.\n");
+    
+    /******* 入出力ピンのモード定義 ****/
+    pinMode(SW_pin1, INPUT);
+    pinMode(SW_pin2, INPUT);
+    pinMode(Push_pin, INPUT);
+    pinMode(LED_pin, OUTPUT);
+    pinMode(LED_pin_bar, OUTPUT);
+    
+    /******* LCDメッセージ表示 *******/
+    lcd.begin(16, 2);
+    lcd.print("Epoch#:");
+    lcd.setCursor(0,1);
+    lcd.print("Loss  :");
+    delay(10);
+    
+    /******* 初期化動作チェック終了のLED点灯1秒 *******/
+    for (s=0; s<5; s++){ 
+      digitalWrite(LED_pin,HIGH);
+      lcd.setRGB(255, 0, 0);
+      leds.setColorRGB(0,255,0,0);
+      delay(200);
+      lcd.setRGB(0, 255, 0);
+      leds.setColorRGB(0,0,255,0);
+      delay(200);
+      lcd.setRGB(65, 65, 200);
+      leds.setColorRGB(0,20,20,200);    //カラーLED OKの際の色
+      digitalWrite(LED_pin,LOW);
+      delay(200);
+ 
+    }    
+      leds.setColorRGB(0,255,255,255);
+      lcd.setRGB(255, 255, 255);
+ 
+    /******* 乱数の初期値設定 *******/
+     randomSeed(analogRead(0));   //乱数の初期値をばらつかせるために導入（いれないといつも同じ学習履歴）
+
+}
+void loop(){
+    byte flag, op;
+    byte in_dat[N_IN];   //入力データ
+    byte la_dat[N_OUT];  //教師データ（label)
+ 
+    switch (state) {
+      case 0: // デフォルトステート(推論)
+            /********** PUSH_SW押下による状態遷移 **********/
+            state = (digitalRead(Push_pin) == HIGH) ? 1 : 0;// D5 学習EN
+            
+            /********** 推論入力データの生成    **********/    
+            /*スライドスイッチのデータを取り込み 学習用データセットと同様に、反転させた
+             * 入力を持たせている。*/            
+            in_dat[0] = (digitalRead(SW_pin1) == HIGH) ? B00100000 : B00000000;
+            in_dat[1] = (digitalRead(SW_pin1) == HIGH) ? B00000000 : B00100000;
+            in_dat[2] = (digitalRead(SW_pin2) == HIGH) ? B00100000 : B00000000;
+            in_dat[3] = (digitalRead(SW_pin2) == HIGH) ? B00000000 : B00100000;
+
+            /********** 推論入力データのSRAMへの書き込み  **********/
+            for (i = 0; i < N_IN; i++){
+             sRam.writeBuffer(SRAM0 + ADDR_INPUT_START +  i, (char *)&in_dat[i], 1);
+            }
+            
+            /********** 推論実行（関数）.cppファイル参照**********/
+            run_neural_network(sRam, 0x04);
+
+            /********** 推論結果の入手とLED表示**********/
+            byte buffer[50];
+            sRam.readBuffer(SRAM0 + ADDR_OUTPUT_START, (char *)buffer, N_OUT);
+
+            LED_OUT = ((buffer[0] -buffer[1]) >= 0) ? HIGH : LOW;
+            digitalWrite(LED_pin, LED_OUT);
+
+            break;
+
+      case 1: // ボタン押下状態
+            /********** PUSH_SWを離すことによる状態遷移 **********/
+            state = (digitalRead(Push_pin) == LOW) ? 2 : 1;    
+            break;
+
+      case 2: //学習→推論　・・・ l(learn_time)回
+//            push_num++;  //学習ENのプッシュ回数をシリアルモニターに！
+//            Serial.print("push# ");Serial.println(push_num);
+            
+            while(count < learn_time){
+               /******* 入力・教師データ読み込み**********/ 
+                //学習用データセット
+                //スライドSWの値は使用しない！　1→1→0→0でまた1に戻る！
+//                patternNum = count%4;
+                patternNum = random(4);
+                in_dat[0] = in_0[patternNum];  //{1,1,0,0} 　　
+                in_dat[1] = in_1[patternNum];  //逆
+                in_dat[2] = in_2[patternNum];  //{1,0,1,0} 
+                in_dat[3] = in_3[patternNum];  //逆
+                la_dat[0] = out_0[patternNum]; //{0,1,1,0}　
+                la_dat[1] = out_1[patternNum]; //逆
+
+                /******** 入力・教師データ書き込み         **********/
+                for (i = 0; i < N_IN; i++) sRam.writeBuffer(SRAM0 + ADDR_INPUT_START +  i, (char *)&in_dat[i], 1);
+                for (i = 0; i < N_OUT; i++) sRam.writeBuffer(SRAM0 + ADDR_LABEL_START +  i, (char *)&la_dat[i], 1);
+
+                /******** 学習・推論（関数）一行     **********/
+                run_neural_network(sRam, 0x08);
+
+                /******** シリアルモニター用に推論値を読み出し    **********/
+                sRam.readBuffer(SRAM0 + ADDR_OUTPUT_START, (char *)buffer, N_OUT);               
+                float y0, y1, ydiff;
+                int y;                                        
+                y0 = float(buffer[0]/32.0);  //buffer値は最終層のシグモイド関数値 0〜1
+                y1 = float(buffer[1]/32.0);  //32で割る （B00100000 =32）
+                ydiff = y0 - y1;
+                y = (la_dat[0] == 0)? ((ydiff <0 )? 1:0):((ydiff >=0 )? 1:0);
+                loss =(pow((la_dat[0]/32.0-y0),2) +pow((la_dat[1]/32.0-y1),2)) /2;
+                /******** シリアルモニター表示  **********/
+                Serial.print(count+1);Serial.print(":(");
+                Serial.print(in_dat[0]/32);
+                Serial.print(in_dat[2]/32);Serial.print(" ");
+                Serial.print(la_dat[0]/32);Serial.print("): ");
+                  //(X0 X2 Y0)の学習セット
+                Serial.print(y0);Serial.print(": "); //推論値y0
+                Serial.print(y1);Serial.print(": "); //推論値y1
+                Serial.print(y);Serial.print(" : loss=　");  
+                                       //1:True, 0:False =y 推論判定値
+                Serial.print(loss,2);Serial.print(":    ");
+                Serial.print(ydiff);Serial.println("");  //推論値差 ydiff= y0-y1
+
+                /******** LED 不良時点灯  **********/
+                LED_OUT_NG = (y == 0) ? HIGH : LOW;// 学習時のFPの推論値を用いてLEDを表示している！
+                LED_OUT_OK = (y == 1) ? HIGH : LOW;// 学習時のFPの推論値を用いてLEDを表示している！
+                digitalWrite(LED_pin, LED_OUT_NG);
+                digitalWrite(LED_pin_bar, LED_OUT_OK);
+
+                
+                /******** LCD 不良時表示  **********/
+                lcd.setRGB(color_r, color_g, color_b);
+                leds.setColorRGB(0,0,255,0);    //カラーLED OKの際の色
+                lcd.setCursor(7, 0);
+                lcd.print(count+1);
+                lcd.setCursor(7, 1);
+                lcd.print(loss,2);
+//                delay(10);
+                
+               if (y == 0){
+                  lcd.setRGB(255, 0, 0);
+                  leds.setColorRGB(0,255,0,0);    //カラーLED NGの時の色 赤
+                  delay(delaytime_lcd);
+                  lcd.setCursor(12, 0);
+                  lcd.print(count+1);
+                  lcd.setCursor(12, 1);
+                  lcd.print(loss,2);
+                  }
+                    
+                
+                /******** 遅延調整 **********/
+                delay(delaytime);
+
+                count++;
+            }
+            Serial.println("");  //複数回学習が終了後に一行空けた！
+            state = 0;
+            count = 0;
+            break;
+    }
+}
