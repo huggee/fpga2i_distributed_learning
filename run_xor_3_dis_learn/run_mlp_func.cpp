@@ -12,18 +12,22 @@ void sram_data_init(SpiRAM sRam){
 
     for(i = ADDR_INPUT_START; i <= ADDR_INPUT_END; i++){
         sRam.readBuffer(SRAM0 + i, (char *)buffer, 1);
+        #ifdef SERIAL_MONITOR_ENABLE
         Serial.print(i, HEX);
         Serial.print(", ");
         Serial.print(buffer[0], HEX);
         Serial.println("");
+        #endif
     }
 
     for(i = ADDR_LABEL_START; i <= ADDR_LABEL_END; i++){
         sRam.readBuffer(SRAM0 + i, (char *)buffer, 1);
+        #ifdef SERIAL_MONITOR_ENABLE
         Serial.print(i, HEX);
         Serial.print(", ");
         Serial.print(buffer[0], HEX);
         Serial.println("");
+        #endif
     }
 }
 
@@ -31,7 +35,7 @@ void sram_data_init(SpiRAM sRam){
 
 
 
-void sram_wait_init(SpiRAM sRam){
+void sram_weight_init(SpiRAM sRam){
     uint32_t i = 0;
     int randNum_0;
     byte randbit_0;
@@ -95,10 +99,14 @@ void print_recieved_data(SpiRAM sRam){
     //     Serial.print(buffer[3], HEX); Serial.print("  ");
     // }
     /********* 出力結果表示 *********/
+    #ifdef SERIAL_MONITOR_ENABLE
     Serial.print(":  "); //Serial.print(SRAM0 + ADDR_OUTPUT_START, HEX); Serial.print(" ");
+    #endif
     sRam.readBuffer(SRAM0 + ADDR_OUTPUT_START, (char *)buffer, N_OUT);
     //value = float(buffer[0]/32.0);
+    #ifdef SERIAL_MONITOR_ENABLE
     Serial.print(buffer[0]/32.0);
+    #endif
     // for(i = 0; i < N_OUT; i++){
     //     Serial.print(buffer[i], DEC); Serial.print(" ");
     // }

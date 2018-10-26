@@ -48,6 +48,8 @@
 #include "run_mlp_def.h"    //固有の関数（.hで定義して.cppにソースコード）
 SpiRAM sRam(9);             //SRAMとのSPI通信のSS(SlaveSlect)にD9（固定）
 byte buffer[200] = {};
+char recData = ' ';
+int reduce_interval = 10;
 
 /********** LCD表示 **********/
 #include <Wire.h>
@@ -96,21 +98,34 @@ byte in_3[4] = {B00000000,B00100000,B00000000,B00100000}; //X3=X2bar
 byte out_0[4] = {B00000000,B00100000,B00100000,B00000000};//Y0    ={0,1,1,0}
 byte out_1[4] = {B00100000,B00000000,B00000000,B00100000};//Y1=Y0bar 
 
+void upload(uint32_t sram_base_addr, uint32_t start_addr, uint32_t end_addr, byte *buf){
+  for(i = start_addr; i <= end_addr; i++){
+    sRam.readBuffer(sram_base_addr + i, (char *)buf, 1);
+    Serial.print(buf[0]);
+    Serial.print(',');
+  }
+  Serial.print('\n');
+}
+
 void setup(){           
     /******* 初期動作チェック         *******/    
     pinMode(13,OUTPUT);   //Arduino内蔵LED13ピン
     digitalWrite(13,HIGH);delay(200);digitalWrite(13,LOW); 
     Serial.begin(9600); 
 //    Serial.begin(2000000); 
+    #ifdef SERIAL_MONITOR_ENABLE
     Serial.println("\nStart Initialization.\n");
+    #endif
     
     /******* GPIOとSRAMの全領域を0で埋める **********/
     zero_filling(sRam);
     /******* SRAMの重み領域を初期化        **********/
-    sram_wait_init(sRam);
+    sram_weight_init(sRam);
     /******* SRAMの入力データとラベル領域を初期化 *******/
     sram_data_init(sRam);
+    #ifdef SERIAL_MONITOR_ENABLE
     Serial.println("\nEnd Initialization.\n");
+    #endif
     
     /******* 入出力ピンのモード定義 ****/
     pinMode(SW_pin1, INPUT);
@@ -144,8 +159,11 @@ void setup(){
       leds.setColorRGB(0,255,255,255);
       lcd.setRGB(255, 255, 255);
  
+      Serial.print('I');
+      // Serial.print('\n');
+
     /******* 乱数の初期値設定 *******/
-     randomSeed(analogRead(0));   //乱数の初期値をばらつかせるために導入（いれないといつも同じ学習履歴）
+     randomSeed(analogRead(A3));   //乱数の初期値をばらつかせるために導入（いれないといつも同じ学習履歴）
 
 }
 void loop(){
@@ -155,8 +173,15 @@ void loop(){
  
     switch (state) {
       case 0: // デフォルトステート(推論)
-            /********** PUSH_SW押下による状態遷移 **********/
-            state = (digitalRead(Push_pin) == HIGH) ? 1 : 0;// D5 学習EN
+
+            // PCから'J'を受け取ったら学習・推論開始
+            if(recData == 'J'){
+              state = 3;
+              recData == ' ';
+            }
+
+            // /********** PUSH_SW押下による状態遷移 **********/   
+            // state = (digitalRead(Push_pin) == HIGH) ? 1 : 0;// D5 学習EN
             
             /********** 推論入力データの生成    **********/    
             /*スライドスイッチのデータを取り込み 学習用データセットと同様に、反転させた
@@ -186,6 +211,7 @@ void loop(){
       case 1: // ボタン押下状態
             /********** PUSH_SWを離すことによる状態遷移 **********/
             state = (digitalRead(Push_pin) == LOW) ? 2 : 1;    
+
             break;
 
       case 2: //学習→推論　・・・ l(learn_time)回
@@ -222,6 +248,7 @@ void loop(){
                 y = (la_dat[0] == 0)? ((ydiff <0 )? 1:0):((ydiff >=0 )? 1:0);
                 loss =(pow((la_dat[0]/32.0-y0),2) +pow((la_dat[1]/32.0-y1),2)) /2;
                 /******** シリアルモニター表示  **********/
+                #ifdef SERIAL_MONITOR_ENABLE
                 Serial.print(count+1);Serial.print(":(");
                 Serial.print(in_dat[0]/32);
                 Serial.print(in_dat[2]/32);Serial.print(" ");
@@ -233,6 +260,7 @@ void loop(){
                                        //1:True, 0:False =y 推論判定値
                 Serial.print(loss,2);Serial.print(":    ");
                 Serial.print(ydiff);Serial.println("");  //推論値差 ydiff= y0-y1
+                #endif
 
                 /******** LED 不良時点灯  **********/
                 LED_OUT_NG = (y == 0) ? HIGH : LOW;// 学習時のFPの推論値を用いてLEDを表示している！
@@ -266,9 +294,213 @@ void loop(){
 
                 count++;
             }
+            #ifdef SERIAL_MONITOR_ENABLE
             Serial.println("");  //複数回学習が終了後に一行空けた！
+            #endif
             state = 0;
             count = 0;
             break;
+
+      case 3: //学習→推論+分散学習　・・・ l(learn_time)回
+            if(count >= reduce_interval
+                && count % reduce_interval == 0){
+              upload(SRAM0, ADDR_WH_START, ADDR_WH_END, buffer);
+              upload(SRAM1, ADDR_WH_START, ADDR_WH_END, buffer);
+              upload(SRAM0, ADDR_WO_START, ADDR_WO_END, buffer);
+              upload(SRAM1, ADDR_WO_START, ADDR_WO_END, buffer);
+              while(1){
+                  lcd.setCursor(7, 0);
+                  lcd.print(buffer[0]);
+              }
+
+              // // Whの上位ビット送信
+              // for(i = ADDR_WH_START; i <= ADDR_WH_END; i++){
+              //   sRam.readBuffer(SRAM0 + i, (char *)buffer, 1);
+              //   Serial.print(buffer[0]);
+              //   Serial.print(',');
+              // }
+              // Serial.print('\n');
+
+              // // Whの下位ビット送信
+              // for(i = ADDR_WH_START; i <= ADDR_WH_END; i++){
+              //   sRam.readBuffer(SRAM1 + i, (char *)buffer, 1);
+              //   Serial.print(buffer[0]);
+              //   Serial.print(',');
+              // }                  
+              // Serial.print('\n');
+
+              // // Woの上位ビット送信
+              // for(i = ADDR_WO_START; i <= ADDR_WO_END; i++){
+              //   sRam.readBuffer(SRAM0 + i, (char *)buffer, 1);
+              //   Serial.print(buffer[0]);
+              //   Serial.print(',');
+              // }                  
+              // Serial.print('\n');
+
+              // // Woの下位ビット送信
+              // for(i = ADDR_WO_START; i <= ADDR_WO_END; i++){
+              //   sRam.readBuffer(SRAM1 + i, (char *)buffer, 1);
+              //   Serial.print(buffer[0]);
+              //   Serial.print(',');
+              // }             
+              // Serial.print('\n');
+              // while(1){
+              //     lcd.setCursor(7, 0);
+              //     lcd.print(buffer[0]);
+              // }
+
+              // Whの上位ビットダウンロード
+              for(i = ADDR_WH_START; i <= ADDR_WH_END; i++){
+                while(Serial.available() == 0){delay(1);}
+                buffer[0] = Serial.read();
+                sRam.writeBuffer(SRAM0 + i, (char *)buffer, 1);
+                // lcd.setCursor(7, 0);
+                // lcd.print(buffer[0]);
+              }
+              
+
+              while(Serial.available() == 0){delay(1);}
+              buffer[0] = Serial.read();
+              if(char(buffer[0]) != 'E'){
+                  // lcd.clear();
+                  lcd.setCursor(7, 0);
+                  lcd.print(buffer[0]);
+                  lcd.setCursor(12, 0);
+                  lcd.print("ERROR1");
+                  lcd.setCursor(7, 1);
+                  lcd.print(char(buffer[0]));        
+                  while(1){delay(0);}
+              }
+              // Whの下位ビットダウンロード
+              for(i = ADDR_WH_START; i <= ADDR_WH_END; i++){
+                while(Serial.available() == 0){delay(1);}
+                buffer[0] = Serial.read();
+                sRam.writeBuffer(SRAM1 + i, (char *)buffer, 1);
+              }
+              while(Serial.available() == 0){delay(1);}
+              recData = Serial.read();
+              if(recData != 'E'){
+                  lcd.setCursor(0, 0);
+                  lcd.print("ERROR2");
+                  while(1){delay(0);}
+              }
+              // Woの上位ビットダウンロード
+              for(i = ADDR_WO_START; i <= ADDR_WO_END; i++){
+                while(Serial.available() == 0){delay(1);}
+                buffer[0] = Serial.read();
+                sRam.writeBuffer(SRAM0 + i, (char *)buffer, 1);
+              }
+              while(Serial.available() == 0){delay(1);}
+              recData = Serial.read();
+              if(recData != 'E'){
+                  lcd.setCursor(0, 0);
+                  lcd.print("ERROR3");
+                  while(1){delay(0);}
+              }                            
+              // Woの下位ビットダウンロード
+              for(i = ADDR_WO_START; i <= ADDR_WO_END; i++){
+                while(Serial.available() == 0){delay(1);}
+                buffer[0] = Serial.read();
+                sRam.writeBuffer(SRAM1 + i, (char *)buffer, 1);
+              }
+              while(Serial.available() == 0){delay(1);}
+              recData = Serial.read();
+              if(recData != 'E'){
+                  lcd.setCursor(0, 0);
+                  lcd.print("ERROR4");
+                  while(1){delay(0);}
+              }
+              while(1){
+                lcd.setCursor(0,0);
+                lcd.print("SUCCESS");
+              }
+
+            }else{
+              
+            /******* 入力・教師データ読み込み**********/ 
+              //学習用データセット
+              //スライドSWの値は使用しない！　1→1→0→0でまた1に戻る！
+              patternNum = random(4);
+              in_dat[0] = in_0[patternNum];  //{1,1,0,0} 　　
+              in_dat[1] = in_1[patternNum];  //逆
+              in_dat[2] = in_2[patternNum];  //{1,0,1,0} 
+              in_dat[3] = in_3[patternNum];  //逆
+              la_dat[0] = out_0[patternNum]; //{0,1,1,0}　
+              la_dat[1] = out_1[patternNum]; //逆
+
+              /******** 入力・教師データ書き込み         **********/
+              for (i = 0; i < N_IN; i++) sRam.writeBuffer(SRAM0 + ADDR_INPUT_START +  i, (char *)&in_dat[i], 1);
+              for (i = 0; i < N_OUT; i++) sRam.writeBuffer(SRAM0 + ADDR_LABEL_START +  i, (char *)&la_dat[i], 1);
+
+              /******** 学習・推論（関数）一行     **********/
+              run_neural_network(sRam, 0x08);
+
+              /******** シリアルモニター用に推論値を読み出し    **********/
+              sRam.readBuffer(SRAM0 + ADDR_OUTPUT_START, (char *)buffer, N_OUT);               
+              float y0, y1, ydiff;
+              int y;                                        
+              y0 = float(buffer[0]/32.0);  //buffer値は最終層のシグモイド関数値 0〜1
+              y1 = float(buffer[1]/32.0);  //32で割る （B00100000 =32）
+              ydiff = y0 - y1;
+              y = (la_dat[0] == 0)? ((ydiff <0 )? 1:0):((ydiff >=0 )? 1:0);
+              loss =(pow((la_dat[0]/32.0-y0),2) +pow((la_dat[1]/32.0-y1),2)) /2;
+              /******** シリアルモニター表示  **********/
+              #ifdef SERIAL_MONITOR_ENABLE
+              Serial.print(count+1);Serial.print(":(");
+              Serial.print(in_dat[0]/32);
+              Serial.print(in_dat[2]/32);Serial.print(" ");
+              Serial.print(la_dat[0]/32);Serial.print("): ");
+                //(X0 X2 Y0)の学習セット
+              Serial.print(y0);Serial.print(": "); //推論値y0
+              Serial.print(y1);Serial.print(": "); //推論値y1
+              Serial.print(y);Serial.print(" : loss=　");  
+                                    //1:True, 0:False =y 推論判定値
+              Serial.print(loss,2);Serial.print(":    ");
+              Serial.print(ydiff);Serial.println("");  //推論値差 ydiff= y0-y1
+              #endif
+
+              /******** LED 不良時点灯  **********/
+              LED_OUT_NG = (y == 0) ? HIGH : LOW;// 学習時のFPの推論値を用いてLEDを表示している！
+              LED_OUT_OK = (y == 1) ? HIGH : LOW;// 学習時のFPの推論値を用いてLEDを表示している！
+              digitalWrite(LED_pin, LED_OUT_NG);
+              digitalWrite(LED_pin_bar, LED_OUT_OK);
+
+              
+              /******** LCD 不良時表示  **********/
+              lcd.setRGB(color_r, color_g, color_b);
+              leds.setColorRGB(0,0,255,0);    //カラーLED OKの際の色
+              lcd.setCursor(7, 0);
+              lcd.print(count+1);
+              lcd.setCursor(7, 1);
+              lcd.print(loss,2);
+  //                delay(10);
+              
+            if (y == 0){
+                lcd.setRGB(255, 0, 0);
+                leds.setColorRGB(0,255,0,0);    //カラーLED NGの時の色 赤
+                delay(delaytime_lcd);
+                lcd.setCursor(12, 0);
+                lcd.print(count+1);
+                lcd.setCursor(12, 1);
+                lcd.print(loss,2);
+                }                  
+              
+              /******** 遅延調整 **********/
+              delay(delaytime);
+
+              count++;
+            }
+          if(count == learn_time){
+            state = 0;
+            count = 0;
+          }
+          break;
     }
+}
+
+
+void serialEvent(){
+  if(Serial.available() > 0){
+    recData = Serial.read();
+  }
 }

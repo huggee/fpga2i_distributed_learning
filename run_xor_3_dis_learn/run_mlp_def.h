@@ -4,8 +4,10 @@
 const uint32_t ramSize = 0x1FFFF;           // 128K x 8 bit
 const byte LED = 13;
 
-#define SRAM0 0x100000 // SRAM0の先頭アドレス
-#define SRAM1 0x200000 // SRAM1の先頭アドレス
+// #define SERIAL_MONITOR_ENABLE
+
+const uint32_t SRAM0 = 0x100000; // SRAM0の先頭アドレス
+const uint32_t SRAM1 = 0x200000; // SRAM1の先頭アドレス
 
 #define GPIO0 0x00
 #define GPIO1 0x04
@@ -40,7 +42,7 @@ const byte LED = 13;
 #define ADDR_OUTPUT_END ADDR_OUTPUT_START + N_OUT - 1
 
 void sram_data_init(SpiRAM);
-void sram_wait_init(SpiRAM);
+void sram_weight_init(SpiRAM);
 
 void wait_ack(SpiRAM, byte);
 
