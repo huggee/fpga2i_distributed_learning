@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 import thread
 import time
 import sys
@@ -12,8 +13,11 @@ n_in = 4
 n_h = 30
 n_out = 2
 
-reduce_interval = 100
-mode = 'M'
+PRINT_CONSOLE = False
+reduce_interval = 2
+# mode = 'L' # case 2
+mode = 'M' # case 3
+baudrate = 115200
 
 def trans_16bit_to_float(data, radix):
     w = np.array([])
@@ -57,7 +61,7 @@ if __name__ == '__main__':
     for d in serial.tools.list_ports.comports():
         dtype = d.usb_description()
         if dtype and 'Arduino' in dtype:
-            my_serial.append(serial.Serial(port=d[0], baudrate=115200))
+            my_serial.append(serial.Serial(port=d[0], baudrate=baudrate))
             print('DETECT ' + d[0] + ' ' + d[1])
     print ('')
 
@@ -93,8 +97,6 @@ if __name__ == '__main__':
         recv_w = []
         wh = []
         wo = []
-        # wh = Weights()
-        # wo = Weights()
         wh_b = []
         wo_b = []
         wo_b_l = []
@@ -103,9 +105,10 @@ if __name__ == '__main__':
                 pass
             if(dev.read() == 'U'): # if recieved message is 'U'pload
                 dev.write('S')     # then 'S'tart
-                print('START UPLOAD %s' % dev.port)
+                if PRINT_CONSOLE:
+                    print('START UPLOAD %s' % dev.port)
 
-            # now = time.time()            
+            ### WH読み出し
             u = read_buffer(dev, n_in, n_h)
             u_int = [int(num.encode('hex'), 16) for num in u]
             u_bin = [format(i, '08b') for i in u_int]
@@ -116,6 +119,7 @@ if __name__ == '__main__':
             w = trans_16bit_to_float(w, radix)
             wh.append(w)
 
+            ### WO読み出し
             u = read_buffer(dev, n_h, n_out)
             u_int = [int(num.encode('hex'), 16) for num in u]
             u_bin = [format(i, '08b') for i in u_int]
@@ -126,15 +130,17 @@ if __name__ == '__main__':
             w = trans_16bit_to_float(w, radix)
             wo.append(w)
 
-            # print(time.time() - now)
-
             while dev.in_waiting == 0:
                 pass
             if(dev.read() == 'E'): # if recieved message is 'E'nd
-                print('END UPLOAD %s' % dev.port)
-                print('')
+                if PRINT_CONSOLE:
+                    print('END UPLOAD %s' % dev.port)
+                    print('')
 
-        print('')
+        if PRINT_CONSOLE:
+            print('')
+
+        ### 重みの平均をとる
         wh_reduced = reduce_weight(wh)
         wo_reduced = reduce_weight(wo)
 
@@ -152,12 +158,14 @@ if __name__ == '__main__':
         wo_send_data_l = [chr(i) for i in wo_int_l]
 
 
+        ### Arduinoに重みを書き戻し
         for dev in my_serial:
             dev.write('D') # send message 'D'ownload
             while dev.in_waiting == 0:
                 pass
             if(dev.read() == 'S'): # if recieved message is 'S'tart
-                print('START DOWNLOAD %s' % dev.port)
+                if PRINT_CONSOLE:
+                    print('START DOWNLOAD %s' % dev.port)
             for send_data in wh_send_data_u:
                 dev.write(send_data)
             dev.write('E')
@@ -171,15 +179,15 @@ if __name__ == '__main__':
                 dev.write(send_data)
             dev.write('E')
             dev.write('C') # send message 'C'omplete
-            print("END DOWNLOAD % s" % dev.port)
-            print('')
+            if PRINT_CONSOLE:
+                print("END DOWNLOAD % s" % dev.port)
+                print('')
         
         for dev in my_serial:
             dev.write(mode)
-
-        print("complete")
-        print("")
-        # pdb.set_trace()
+        if PRINT_CONSOLE:
+            print("complete")
+            print("")
 
 
             

@@ -42,8 +42,6 @@ void sram_weight_init(SpiRAM sRam){
     byte randbit_1;
     byte buffer[10] = {};
 
-    // randomSeed(analogRead(A3));
-    randomSeed(100);
     for(i = 0; i <= ADDR_LABEL_END; i++){
         if(i <= ADDR_WH_END){
             randNum_0 = random(0, 256);

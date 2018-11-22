@@ -6,7 +6,6 @@
  * 20181008 H.M/I.H コメント付け 01_Logic/run_xor_comment/run_xor_comment.ino
  * 20181010 H.M/I.H 
  * 20181019 H.M  ランダム学習方式へ変換
- * 20181101 I.H  case2を分散学習用コードに置き換え
  * 解説：
  * (0)ネットワークmlp:ニューロン数 4-30-2:活性化関数 シグモイド（含；最終層）   
  *    バイアス値は未使用（RNN系では使用）
@@ -49,9 +48,8 @@
 #include "run_mlp_def.h"    //固有の関数（.hで定義して.cppにソースコード）
 SpiRAM sRam(9);             //SRAMとのSPI通信のSS(SlaveSlect)にD9（固定）
 byte buffer[200] = {};
-long baudrate = 115200;     //シリアル通信のボードレート
-char recvMessage = ' ';     //PCから送信された文字
-byte reduce_interval;       //重み平均のインターバル（PCから受信）
+char recvMessage = ' ';
+byte reduce_interval;
 
 /********** LCD表示 **********/
 #include <Wire.h>
@@ -68,7 +66,7 @@ ChainableLED leds(A0, A1, 1);
 /********** 入出力ピン・変数宣言 **********/
 int SW_pin1 = 2; //x0
 int SW_pin2 = 3; //x2
-int Push_pin =A2; //学習EN
+int Push_pin =5; //学習EN
 int LED_pin = 7; //LED
 int LED_pin_bar = 6; //LED_bar反転して表示
 
@@ -76,10 +74,10 @@ int i, j, k, m;
 float s;
 int state = 0;
 int count = 0;
-int learn_time = 500;            //一回の学習EN用のプッシュスイッチでの学習回数
+int learn_time = 1000;            //一回の学習EN用のプッシュスイッチでの学習回数
 int push_num =0;                  //学習EN用のプッシュスイッチを押した回数
 byte patternNum =0 ;              //これから学習するデータのパターンの番号
-int delaytime=0;                  //一回の学習サイクル時間を見かけ上延ばすための調整時間
+int delaytime=2;                  //一回の学習サイクル時間を見かけ上延ばすための調整時間
 int delaytime_lcd = 80;           //LCDが赤色を発色しているとわかるぎりぎりの時間
 float loss =0;                    //損失関数は二乗差の総和（といってもy1とy2のふたつ)を4で割っている
 
@@ -100,7 +98,6 @@ byte in_3[4] = {B00000000,B00100000,B00000000,B00100000}; //X3=X2bar
 byte out_0[4] = {B00000000,B00100000,B00100000,B00000000};//Y0    ={0,1,1,0}
 byte out_1[4] = {B00100000,B00000000,B00000000,B00100000};//Y1=Y0bar 
 
-/******** 重みをPCに送信する関数 **********/
 void upload(uint32_t sram_base_addr, uint32_t start_addr, uint32_t end_addr, byte *buf){
   for(i = start_addr; i <= end_addr; i++){
     sRam.readBuffer(sram_base_addr + i, (char *)buf, 1);
@@ -110,7 +107,6 @@ void upload(uint32_t sram_base_addr, uint32_t start_addr, uint32_t end_addr, byt
   //Serial.print('\n');
 }
 
-/******** 重みをPCから受信し、SRAMに書き込む関数 **********/
 void download(uint32_t sram_base_addr, uint32_t start_addr, uint32_t end_addr, byte *buf){
   char delimiter = ' ';
   for(i = start_addr; i <= end_addr; i++){
@@ -134,7 +130,8 @@ void setup(){
     /******* 初期動作チェック         *******/    
     pinMode(13,OUTPUT);   //Arduino内蔵LED13ピン
     digitalWrite(13,HIGH);delay(200);digitalWrite(13,LOW); 
-    Serial.begin(baudrate); 
+    // Serial.begin(115200); 
+    Serial.begin(250000); 
     #ifdef SERIAL_MONITOR_ENABLE
     Serial.println("\nStart Initialization.\n");
     #endif
@@ -172,49 +169,10 @@ void setup(){
       lcd.setRGB(255, 0, 0);
       leds.setColorRGB(0,255,0,0);
       delay(200);
-      lcd.setRGB(0, 255, 0);
-      leds.setColorRGB(0,0,255,0);
-      delay(200);
-      lcd.setRGB(65, 65, 200);
-      leds.setColorRGB(0,20,20,200);    //カラーLED OKの際の色
-      digitalWrite(LED_pin,LOW);
-      delay(200);
- 
-    }    
-    leds.setColorRGB(0,255,255,255);
-    lcd.setRGB(255, 255, 255);
- 
-
-    /******* 乱数の初期値設定 *******/
-    randomSeed(analogRead(A3));   //乱数の初期値をばらつかせるために導入（いれないといつも同じ学習履歴）
-
-    while(Serial.available() == 0){ delay(1); }
-    reduce_interval = Serial.read();
-    Serial.print('R');
-    // while(1){
-    //   lcd.setCursor(0,0);
-    //   lcd.print(reduce_interval);
-    // }
-      
-}
-void loop(){
-    byte flag, op;
-    byte in_dat[N_IN];   //入力データ
-    byte la_dat[N_OUT];  //教師データ（label)
- 
-    if(Serial.available() > 0){
-      recvMessage = Serial.read();
-    }
-
-    switch (state) {
-      case 0: // デフォルトステート(推論)
-
-            // PCから'J'を受け取ったら学習・推論開始
-            if(recvMessage == 'L' && digitalRead(Push_pin) == HIGH){
-              state = 1;
+              STATE = 2;
             }
-            if(recvMessage == 'M' && digitalRead(Push_pin) == HIGH){
-              state = 1;
+            if(recvMessage == 'M'){
+              state = 3;
             }
 
             // /********** PUSH_SW押下による状態遷移 **********/   
@@ -251,7 +209,95 @@ void loop(){
 
             break;
 
-      case 2: //学習→推論+分散学習　・・・ l(learn_time)回
+      case 2: //学習→推論　・・・ l(learn_time)回
+//            push_num++;  //学習ENのプッシュ回数をシリアルモニターに！
+//            Serial.print("push# ");Serial.println(push_num);
+            
+            while(count < learn_time){
+               /******* 入力・教師データ読み込み**********/ 
+                //学習用データセット
+                //スライドSWの値は使用しない！　1→1→0→0でまた1に戻る！
+//                patternNum = count%4;
+                patternNum = random(4);
+                in_dat[0] = in_0[patternNum];  //{1,1,0,0} 　　
+                in_dat[1] = in_1[patternNum];  //逆
+                in_dat[2] = in_2[patternNum];  //{1,0,1,0} 
+                in_dat[3] = in_3[patternNum];  //逆
+                la_dat[0] = out_0[patternNum]; //{0,1,1,0}　
+                la_dat[1] = out_1[patternNum]; //逆
+
+                /******** 入力・教師データ書き込み         **********/
+                for (i = 0; i < N_IN; i++) sRam.writeBuffer(SRAM0 + ADDR_INPUT_START +  i, (char *)&in_dat[i], 1);
+                for (i = 0; i < N_OUT; i++) sRam.writeBuffer(SRAM0 + ADDR_LABEL_START +  i, (char *)&la_dat[i], 1);
+
+                /******** 学習・推論（関数）一行     **********/
+                run_neural_network(sRam, 0x08);
+
+                /******** シリアルモニター用に推論値を読み出し    **********/
+                sRam.readBuffer(SRAM0 + ADDR_OUTPUT_START, (char *)buffer, N_OUT);               
+                float y0, y1, ydiff;
+                int y;                                        
+                y0 = float(buffer[0]/32.0);  //buffer値は最終層のシグモイド関数値 0〜1
+                y1 = float(buffer[1]/32.0);  //32で割る （B00100000 =32）
+                ydiff = y0 - y1;
+                y = (la_dat[0] == 0)? ((ydiff <0 )? 1:0):((ydiff >=0 )? 1:0);
+                loss =(pow((la_dat[0]/32.0-y0),2) +pow((la_dat[1]/32.0-y1),2)) /2;
+                /******** シリアルモニター表示  **********/
+                #ifdef SERIAL_MONITOR_ENABLE
+                Serial.print(count+1);Serial.print(":(");
+                Serial.print(in_dat[0]/32);
+                Serial.print(in_dat[2]/32);Serial.print(" ");
+                Serial.print(la_dat[0]/32);Serial.print("): ");
+                  //(X0 X2 Y0)の学習セット
+                Serial.print(y0);Serial.print(": "); //推論値y0
+                Serial.print(y1);Serial.print(": "); //推論値y1
+                Serial.print(y);Serial.print(" : loss=　");  
+                                       //1:True, 0:False =y 推論判定値
+                Serial.print(loss,2);Serial.print(":    ");
+                Serial.print(ydiff);Serial.println("");  //推論値差 ydiff= y0-y1
+                #endif
+
+                /******** LED 不良時点灯  **********/
+                LED_OUT_NG = (y == 0) ? HIGH : LOW;// 学習時のFPの推論値を用いてLEDを表示している！
+                LED_OUT_OK = (y == 1) ? HIGH : LOW;// 学習時のFPの推論値を用いてLEDを表示している！
+                digitalWrite(LED_pin, LED_OUT_NG);
+                digitalWrite(LED_pin_bar, LED_OUT_OK);
+
+                
+                /******** LCD 不良時表示  **********/
+                lcd.setRGB(color_r, color_g, color_b);
+                leds.setColorRGB(0,0,255,0);    //カラーLED OKの際の色
+                lcd.setCursor(7, 0);
+                lcd.print(count+1);
+                lcd.setCursor(7, 1);
+                lcd.print(loss,2);
+//                delay(10);
+                
+               if (y == 0){
+                  lcd.setRGB(255, 0, 0);
+                  leds.setColorRGB(0,255,0,0);    //カラーLED NGの時の色 赤
+                  delay(delaytime_lcd);
+                  lcd.setCursor(12, 0);
+                  lcd.print(count+1);
+                  lcd.setCursor(12, 1);
+                  lcd.print(loss,2);
+                  }
+                    
+                
+                /******** 遅延調整 **********/
+                delay(delaytime);
+
+                count++;
+            }
+            #ifdef SERIAL_MONITOR_ENABLE
+            Serial.println("");  //複数回学習が終了後に一行空けた！
+            #endif
+            state = 0;
+            count = 0;
+            recvMessage = ' ';
+            break;
+
+      case 3: //学習→推論+分散学習　・・・ l(learn_time)回
             if(count >= reduce_interval
                 && count < learn_time
                 && count % reduce_interval == 0){
@@ -352,13 +398,10 @@ void loop(){
               count++;
             }
           if(count == learn_time){
-            state = 4;
+            state = 0;
+            count = 0;
             recvMessage = ' ';
           }
           break;
-    case 4:
-      while(1){
-        delay(1000);
-      }
     }
 }
